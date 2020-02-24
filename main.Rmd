@@ -1,0 +1,135 @@
+---
+title: "Ecological methods for confirming epidemiolgical extinction"
+output: html_document
+---
+<!-- Emma Glennon and Colin Carlson -->
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+
+if(!require(generalSEIR)) {
+        require(devtools)
+        install_github('eeg31/generalSEIR')
+}
+require(generalSEIR)
+require(dplyr)
+require(tidyr)
+source('simSIR.R')
+```
+
+## Model parameterization
+
+```{r parameterize}
+set.seed(20200223)
+nsim <- 10^5 # number of parameter sets/simulations
+tmax <- 5    # years of observation
+
+priors <- tibble(par=c('R_0', 'gamma', 'b', 'm', 
+                       'I_t0', 'R_t0', 'N',
+                       'phi',  # probability confirmed cases are true positives
+                       'omega_I', # testing rate for cases
+                       'omega_nI' # testing rate for non-cases
+                      ) 
+                 ) %>%
+          mutate(mu = case_when(par == 'R_0' ~ 1.5,
+                                par == 'gamma' ~ 12, #recovery rate (1/years)
+                                par == 'b' ~ .05,    #birth rate (1/years)
+                                par == 'm' ~ .045,   #death rate (1/years)
+                                par == 'I_t0' ~ 0.01,# initial infected prop.
+                                par == 'R_t0' ~ 0.9, # initial recovered prop.
+                                par == 'N' ~ 10000,  # population
+                                par == 'phi' ~ 0.95,
+                                TRUE ~ as.numeric(NA)
+                                ), #do this
+                 var = case_when(par == 'R_0' ~ 0.3,
+                                 par == 'gamma' ~ 1,
+                                 par == 'N' ~ 500,
+                                 TRUE ~ 0.2 * mu*(1-mu)),
+                 alpha = ((1 - mu) / var - 1 / mu) * (mu ^ 2),
+                 beta = alpha * (1 / mu - 1),
+                 min = 0, 
+                 max = case_when(par %in% c('N', 'R_0', 'gamma') ~ Inf,
+                                 TRUE ~ 1)
+                 )
+
+
+sample_beta <- function(x #vector of parameter names
+                       ){
+                          sapply(x, function(i) {
+                            rbeta(1, shape1 = filter(priors, par==as.character(i))$alpha,
+                                     shape2 = filter(priors, par==as.character(i))$beta)
+                            })
+}
+
+sample_norm <- function(x #vector of parameter names
+                       ){
+                          sapply(x, function(i) {
+                            rnorm(1, mean = filter(priors, par==as.character(i))$mu,
+                                     sd  = filter(priors, par==as.character(i))$var)
+                            })
+}
+
+sample_linear <- function(x #vector of parameter names
+                       ){
+                          sapply(x, function(i) {
+                            runif(1, min = filter(priors, par==as.character(i))$min,
+                                     max  = filter(priors, par==as.character(i))$max)
+                            })
+}
+```
+
+## Simulation - SIR
+
+```{r simulate}
+
+sims <- as_tibble(expand.grid(ID = 1:nsim, par=unique(priors$par))) %>%
+        pivot_wider(id_cols = 'ID', names_from=par, values_from=par) %>%
+        mutate_at(c('b', 'm', 'phi', 'I_t0', 'R_t0'), sample_beta) %>%
+        mutate_at(c('R_0', 'N', 'gamma'), sample_norm) %>%
+        mutate_at(c('omega_I', 'omega_nI'), sample_linear) %>%
+        mutate(N = round(N),
+               I_t0 = purrr::map2_dbl(N, I_t0, function(size, prob) rbinom(1, size, prob)),
+               I_t0 = purrr::map_dbl(I_t0, function(x) max(x, 10)),
+               R_t0 = purrr::map2_dbl(N, R_t0, function(size, prob) rbinom(1, size, prob)),
+               S_t0 = max(10, N - I_t0 - R_t0),
+               )
+sims <- sims %>%
+        mutate(sim = purrr::map(ID, function(x){
+                  start_state <- c(S_t0[x], I_t0[x], R_t0[x])
+                  params <- list(N = N[x], R0 = R_0[x], gamma = gamma[x], 
+                                 b = b[x], m = m[x])
+                  simSIR(
+                    inc = 12, # monthly observation -- change to 52 for weekly
+                    tmax = tmax,
+                    var = start_state,
+                    par = params
+                  )
+               }),
+               confirmed = purrr::map2(sim, omega_I, function(ts, obs){
+                       ts <- ts$incidence
+                       rbinom(length(ts), size=ts, prob=obs)
+               }),
+               false_positive = purrr::map(ID, function(i){
+                       nonI <- sim[[i]]$N - sim[[i]]$incidence
+                       sampled_false <- rbinom(length(nonI), size=nonI, prob=omega_nI[i]) 
+                       rbinom(length(sampled_false), size=sampled_false, prob=phi[i])
+               })
+        )
+
+save(sims, file='sims.rda')
+```
+
+## Visualisation
+
+```{r viz1}
+
+
+
+```
+
+## Comparison to Solow-Beet
+
+```{r colin-does-his-thing}
+
+
+```
