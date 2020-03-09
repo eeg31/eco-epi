@@ -27,8 +27,9 @@ tmax <- 5    # years of observation
 priors <- tibble(par=c('R_0', 'gamma', 'b', 'm', 
                        'I_t0', 'R_t0', 'N',
                        'phi',  # probability confirmed cases are true positives
-                       'omega_I', # testing rate for cases
-                       'omega_nI' # testing rate for non-cases
+                       'omega_I', # testing rate for cases (assume 100% sensitive)
+                       'omega_nI', # testing rate for non-cases
+                       'v' # proportion of babies vaccinated at birth
                       ) 
                  ) %>%
           mutate(mu = case_when(par == 'R_0' ~ 1.5,
@@ -38,7 +39,7 @@ priors <- tibble(par=c('R_0', 'gamma', 'b', 'm',
                                 par == 'I_t0' ~ 0.01,# initial infected prop.
                                 par == 'R_t0' ~ 0.9, # initial recovered prop.
                                 par == 'N' ~ 10000,  # population
-                                par == 'phi' ~ 0.95,
+                                par == 'phi' ~ 0.05, # 1-specificity (test on suspecteds)
                                 TRUE ~ as.numeric(NA)
                                 ), #do this
                  var = case_when(par == 'R_0' ~ 0.3,
@@ -86,7 +87,7 @@ sims <- as_tibble(expand.grid(ID = 1:nsim, par=unique(priors$par))) %>%
         pivot_wider(id_cols = 'ID', names_from=par, values_from=par) %>%
         mutate_at(c('b', 'm', 'phi', 'I_t0', 'R_t0'), sample_beta) %>%
         mutate_at(c('R_0', 'N', 'gamma'), sample_norm) %>%
-        mutate_at(c('omega_I', 'omega_nI'), sample_linear) %>%
+        mutate_at(c('omega_I', 'omega_nI', 'v'), sample_linear) %>%
         mutate(N = round(N),
                I_t0 = purrr::map2_dbl(N, I_t0, function(size, prob) rbinom(1, size, prob)),
                I_t0 = purrr::map_dbl(I_t0, function(x) max(x, 10)),
@@ -97,7 +98,7 @@ sims <- sims %>%
         mutate(sim = purrr::map(ID, function(x){
                   start_state <- c(S_t0[x], I_t0[x], R_t0[x])
                   params <- list(N = N[x], R0 = R_0[x], gamma = gamma[x], 
-                                 b = b[x], m = m[x])
+                                 b = b[x], m = m[x], v = v[x])
                   simSIR(
                     inc = 12, # monthly observation -- change to 52 for weekly
                     tmax = tmax,
