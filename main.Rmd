@@ -24,13 +24,13 @@ set.seed(20200223)
 nsim <- 10^5 # number of parameter sets/simulations
 tmax <- 5    # years of observation
 
-priors <- tibble(par=c('R_0', 'gamma', 'b', 'm', 
+priors <- tibble(par=c('R_0', 'gamma', 'b', 'm',
                        'I_t0', 'R_t0', 'N',
-                       'phi',  # probability confirmed cases are true positives
-                       'omega_I', # testing rate for cases (assume 100% sensitive)
-                       'omega_nI', # testing rate for non-cases
+                       'phi', # confirmation probability of suspected (true) case
+                       'omega_I', # suspected rate for cases
+                       'omega_nI', # suspected rate for non-cases
                        'v' # proportion of babies vaccinated at birth
-                      ) 
+                      )
                  ) %>%
           mutate(mu = case_when(par == 'R_0' ~ 1.5,
                                 par == 'gamma' ~ 12, #recovery rate (1/years)
@@ -39,7 +39,6 @@ priors <- tibble(par=c('R_0', 'gamma', 'b', 'm',
                                 par == 'I_t0' ~ 0.01,# initial infected prop.
                                 par == 'R_t0' ~ 0.9, # initial recovered prop.
                                 par == 'N' ~ 10000,  # population
-                                par == 'phi' ~ 0.05, # 1-specificity (test on suspecteds)
                                 TRUE ~ as.numeric(NA)
                                 ), #do this
                  var = case_when(par == 'R_0' ~ 0.3,
@@ -48,7 +47,7 @@ priors <- tibble(par=c('R_0', 'gamma', 'b', 'm',
                                  TRUE ~ 0.2 * mu*(1-mu)),
                  alpha = ((1 - mu) / var - 1 / mu) * (mu ^ 2),
                  beta = alpha * (1 / mu - 1),
-                 min = 0, 
+                 min = 0,
                  max = case_when(par %in% c('N', 'R_0', 'gamma') ~ Inf,
                                  TRUE ~ 1)
                  )
@@ -85,9 +84,9 @@ sample_linear <- function(x #vector of parameter names
 
 sims <- as_tibble(expand.grid(ID = 1:nsim, par=unique(priors$par))) %>%
         pivot_wider(id_cols = 'ID', names_from=par, values_from=par) %>%
-        mutate_at(c('b', 'm', 'phi', 'I_t0', 'R_t0'), sample_beta) %>%
+        mutate_at(c('b', 'm', 'I_t0', 'R_t0'), sample_beta) %>%
         mutate_at(c('R_0', 'N', 'gamma'), sample_norm) %>%
-        mutate_at(c('omega_I', 'omega_nI', 'v'), sample_linear) %>%
+        mutate_at(c('omega_I', 'omega_nI', 'v', 'phi'), sample_linear) %>%
         mutate(N = round(N),
                I_t0 = purrr::map2_dbl(N, I_t0, function(size, prob) rbinom(1, size, prob)),
                I_t0 = purrr::map_dbl(I_t0, function(x) max(x, 10)),
@@ -97,7 +96,7 @@ sims <- as_tibble(expand.grid(ID = 1:nsim, par=unique(priors$par))) %>%
 sims <- sims %>%
         mutate(sim = purrr::map(ID, function(x){
                   start_state <- c(S_t0[x], I_t0[x], R_t0[x])
-                  params <- list(N = N[x], R0 = R_0[x], gamma = gamma[x], 
+                  params <- list(N = N[x], R0 = R_0[x], gamma = gamma[x],
                                  b = b[x], m = m[x], v = v[x])
                   simSIR(
                     inc = 12, # monthly observation -- change to 52 for weekly
@@ -106,14 +105,16 @@ sims <- sims %>%
                     par = params
                   )
                }),
-               confirmed = purrr::map2(sim, omega_I, function(ts, obs){
-                       ts <- ts$incidence
+               suspected_true = purrr::map2(sim, omega_I, function(ts, obs){
+                       ts <- ts$incidence # new cases
                        rbinom(length(ts), size=ts, prob=obs)
                }),
-               false_positive = purrr::map(ID, function(i){
-                       nonI <- sim[[i]]$N - sim[[i]]$incidence
-                       sampled_false <- rbinom(length(nonI), size=nonI, prob=omega_nI[i]) 
-                       rbinom(length(sampled_false), size=sampled_false, prob=phi[i])
+               suspected_false = purrr::map2(sim, omega_nI, function(ts, obs){
+                       nonI <- ts$N - ts$I # non-cases
+                       rbinom(length(nonI), size=nonI, prob=obs)
+               }),
+               confirmed = purrr::map2(suspected_true, phi, function(sus, pr_conf){
+                       rbinom(length(sus), size=sus, prob=pr_conf)
                })
         )
 
